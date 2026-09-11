@@ -15,7 +15,5 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Run bot
         env:
-          SITE_URL: ${{ secrets.SITE_URL }}
           TARGET_LINK: ${{ secrets.TARGET_LINK }}
-          FIELD_NAME: ${{ secrets.FIELD_NAME }}
         run: python main.py
