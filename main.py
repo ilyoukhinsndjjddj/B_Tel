@@ -2,6 +2,7 @@ import os
 import random
 import re
 import sys
+import tempfile
 import time
 
 from patchright.sync_api import sync_playwright
@@ -11,9 +12,8 @@ TARGET_LINK = os.getenv("TARGET_LINK", "").strip()
 ATTEMPTS = int(os.getenv("ATTEMPTS", "3"))
 CAPTCHA_WAIT = int(os.getenv("CAPTCHA_WAIT", "75"))
 TIMER_MAX = int(os.getenv("TIMER_MAX", "1500"))
+CLICK_DELAY = int(os.getenv("CLICK_DELAY", "8"))
 HEADLESS = os.getenv("HEADLESS", "0") == "1"
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 
 def log(msg):
@@ -27,6 +27,13 @@ def shot(page, n, tag):
         log(f"اسکرین‌شات: debug/a{n}_{tag}.png")
     except Exception:
         pass
+
+
+def vp_h(page):
+    try:
+        return int(page.evaluate("window.innerHeight")) or 900
+    except Exception:
+        return 900
 
 
 def click_human(page, x, y):
@@ -70,10 +77,10 @@ def click_widget(page):
         pass
     if not b:
         return False
-    vp = page.viewport_size or {"height": 900}
-    if b["y"] < 0 or b["y"] + b["height"] > vp["height"] - 10:
+    h = vp_h(page)
+    if b["y"] < 0 or b["y"] + b["height"] > h - 10:
         try:
-            page.mouse.wheel(0, b["y"] - vp["height"] / 2)
+            page.mouse.wheel(0, b["y"] - h / 2)
             time.sleep(0.6)
             b = page.locator(".fsc-turnstile iframe").first.bounding_box()
         except Exception:
@@ -113,9 +120,30 @@ def status(page):
     return st
 
 
-def attempt(browser, n):
-    ctx = browser.new_context(user_agent=UA, viewport={"width": 1366, "height": 900},
-                              locale="en-US", timezone_id="UTC")
+def launch(p):
+    args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--window-size=1366,900",
+    ]
+    last = ""
+    for ch in ("chrome", "chromium"):
+        tmp = os.path.join(tempfile.gettempdir(), f"tb-profile-{ch}")
+        try:
+            ctx = p.chromium.launch_persistent_context(
+                tmp, channel=ch, headless=HEADLESS, viewport=None, args=args)
+            log(f"مرورگر بالا اومد: {ch}")
+            return ctx
+        except Exception as exc:
+            last = str(exc)[:200]
+            log(f"channel {ch} در دسترس نیست: {last}")
+    raise RuntimeError(f"مرورگر بالا نیومد: {last}")
+
+
+def attempt(ctx, n):
     page = ctx.new_page()
     api = []
 
@@ -136,12 +164,12 @@ def attempt(browser, n):
         page.fill("#inputOptinLinkLoggedIn", TARGET_LINK)
         page.bring_to_front()
         time.sleep(0.3)
+        clicked_get = time.time()
         page.click("#btnOptinLoggedIn")
         log("دکمه Get It Now زده شد، منتظر چک امنیتی...")
 
         clicked = False
-        start = time.time()
-        end = start + CAPTCHA_WAIT
+        end = time.time() + CAPTCHA_WAIT
         while time.time() < end:
             st = status(page)
             if st["timer"]:
@@ -151,7 +179,9 @@ def attempt(browser, n):
                 log(f"خطای ویجت: {st['err_text']}")
                 shot(page, n, "captcha")
                 return "retry", st["err_text"]
-            if not clicked and widget_box(page, timeout=5):
+            if (not clicked
+                    and time.time() - clicked_get >= CLICK_DELAY
+                    and widget_box(page, timeout=5)):
                 log("ویجت آماده شد، دارم کلیک میکنم...")
                 clicked = click_widget(page)
                 time.sleep(1)
@@ -225,7 +255,7 @@ def attempt(browser, n):
         return "retry", str(exc)
     finally:
         try:
-            ctx.close()
+            page.close()
         except Exception:
             pass
 
@@ -241,17 +271,10 @@ def main():
     log(f"لینک: {TARGET_LINK}")
     last = ""
     with sync_playwright() as p:
-        browser = p.chromium.launch(channel="chromium", headless=HEADLESS, args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-background-timer-throttling",
-            "--window-size=1366,900",
-        ])
+        ctx = launch(p)
         try:
             for n in range(1, ATTEMPTS + 1):
-                out, why = attempt(browser, n)
+                out, why = attempt(ctx, n)
                 last = why
                 if out == "done":
                     if why == "success":
@@ -265,7 +288,7 @@ def main():
                     time.sleep(wait)
         finally:
             try:
-                browser.close()
+                ctx.close()
             except Exception:
                 pass
     log(f"بعد از {ATTEMPTS} تلاش موفق نشدیم. آخرین دلیل: {last}")
