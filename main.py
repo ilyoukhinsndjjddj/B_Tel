@@ -1,51 +1,41 @@
-"""
-ربات smm8.com/free-telegram-members
-
-سایت اسکریپتش رو عوض کرده (ravin.js) و دیگه با requests کار نمیکنه.
-جریان جدید:
-  1) باز کردن صفحه
-  2) زدن لینک + کلیک روی "Get It Now"
-  3) حل چک امنیتی Cloudflare Turnstile (روی چک‌باکسش کلیک میکنیم)
-  4) صبر کردن تا تایمر تموم شه (تا 20 دقیقه)
-  5) صفحه Thanks = سفارش ثبت شد
-
-اگه Turnstile رد کنه، کل فلو رو از نو تلاش میکنیم (ATTEMPTS بار).
-"""
-
 import os
 import random
 import re
 import sys
 import time
 
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 
-# ================= تنظیمات =================
 SITE = os.getenv("SITE_URL", "https://smm8.com/free-telegram-members")
 TARGET_LINK = os.getenv("TARGET_LINK", "").strip()
-ATTEMPTS = int(os.getenv("ATTEMPTS", "3"))          # چند بار کل فلو رو تکرار کنیم
-CAPTCHA_WAIT = int(os.getenv("CAPTCHA_WAIT", "75"))  # حداکثر صبر برای Turnstile (ثانیه)
-TIMER_MAX = int(os.getenv("TIMER_MAX", "1500"))      # حداکثر صبر برای تایمر (ثانیه)
+ATTEMPTS = int(os.getenv("ATTEMPTS", "3"))
+CAPTCHA_WAIT = int(os.getenv("CAPTCHA_WAIT", "75"))
+TIMER_MAX = int(os.getenv("TIMER_MAX", "1500"))
 HEADLESS = os.getenv("HEADLESS", "0") == "1"
-
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 
-def log(msg: str) -> None:
+def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def human_click(page, x: float, y: float) -> None:
-    """حرکت موس مثل انسان، بعد کلیک."""
+def shot(page, n, tag):
+    try:
+        os.makedirs("debug", exist_ok=True)
+        page.screenshot(path=f"debug/a{n}_{tag}.png")
+        log(f"اسکرین‌شات: debug/a{n}_{tag}.png")
+    except Exception:
+        pass
+
+
+def click_human(page, x, y):
     page.mouse.move(x - 180, y - 100)
     time.sleep(random.uniform(0.2, 0.4))
     for i in range(14):
         f = (i + 1) / 14
-        page.mouse.move(
-            x - 180 + 180 * f + random.uniform(-3, 3),
-            y - 100 + 100 * f + random.uniform(-3, 3),
-        )
+        page.mouse.move(x - 180 + 180 * f + random.uniform(-3, 3),
+                        y - 100 + 100 * f + random.uniform(-3, 3))
         time.sleep(random.uniform(0.02, 0.06))
     time.sleep(random.uniform(0.2, 0.4))
     page.mouse.down()
@@ -53,103 +43,83 @@ def human_click(page, x: float, y: float) -> None:
     page.mouse.up()
 
 
-def turnstile_box(page):
-    """جعبه ویجت Turnstile روی صفحه (بعد از اسکرول به داخل دید)، یا None."""
-    # اول ویجت رو بیار توی دید
-    try:
-        page.locator(".fsc-turnstile").scroll_into_view_if_needed(timeout=3000)
-        time.sleep(0.4)
-    except Exception:
-        pass
-    for frame in page.frames:
-        if "challenges.cloudflare.com" not in frame.url:
-            continue
+def widget_box(page, timeout=45):
+    """صبر میکنه تا ویجت Turnstile واقعاً رندر بشه (نه iframe 1x1)."""
+    end = time.time() + timeout
+    while time.time() < end:
         try:
-            box = frame.frame_element().bounding_box()
+            fr = page.locator(".fsc-turnstile iframe")
+            if fr.count():
+                b = fr.first.bounding_box()
+                if b and b["width"] > 250 and b["height"] > 50:
+                    return b
         except Exception:
-            box = None
-        if not box or box["width"] <= 50 or box["height"] <= 20:
-            continue
-        # اگه از دید خارجه، اسکرول کن تا بیاد داخل
-        vp = page.viewport_size or {"height": 900}
-        top = box["y"]
-        if top < 0 or top + box["height"] > vp["height"] - 10:
-            page.evaluate(
-                "y => window.scrollBy(0, y)",
-                top - vp["height"] / 2,
-            )
-            time.sleep(0.5)
-            try:
-                box = frame.frame_element().bounding_box()
-            except Exception:
-                box = None
-            if not box:
-                continue
-        if box["y"] < 0 or box["y"] + box["height"] > vp["height"]:
-            continue  # هنوز جاش درست نیست، دفعه بعد دوباره
-        return box
+            pass
+        time.sleep(0.5)
     return None
 
 
-def page_status(page) -> dict:
-    """وضعیت فعلی ویجت رو جمع میکنه."""
-    def vis(sel: str) -> bool:
+def click_widget(page):
+    """کلیک روی چک‌باکس ویجت: اول روی المنت واقعی، بعد با مختصات انسانی."""
+    b = widget_box(page)
+    if not b:
+        return False
+    try:
+        page.locator(".fsc-turnstile").scroll_into_view_if_needed(timeout=3000)
+        time.sleep(0.5)
+        b = page.locator(".fsc-turnstile iframe").first.bounding_box()
+    except Exception:
+        pass
+    if not b:
+        return False
+    vp = page.viewport_size or {"height": 900}
+    if b["y"] < 0 or b["y"] + b["height"] > vp["height"] - 10:
+        try:
+            page.mouse.wheel(0, b["y"] - vp["height"] / 2)
+            time.sleep(0.6)
+            b = page.locator(".fsc-turnstile iframe").first.bounding_box()
+        except Exception:
+            pass
+        if not b:
+            return False
+    try:
+        inp = page.frame_locator(".fsc-turnstile iframe").locator("input")
+        if inp.count() > 0 and inp.first.is_visible():
+            inp.first.click(timeout=4000)
+            log("روی چک‌باکس واقعی (input) کلیک شد")
+            return True
+    except Exception as exc:
+        log(f"کلیک روی input جواب نداد ({str(exc)[:60]})، میام سراغ مختصات")
+    x = b["x"] + 21
+    y = b["y"] + b["height"] / 2
+    page.bring_to_front()
+    click_human(page, x, y)
+    log(f"روی چک‌باکس کلیک شد ({int(x)},{int(y)})")
+    return True
+
+
+def status(page):
+    def vis(sel):
         loc = page.locator(sel)
         return bool(loc.count()) and loc.first.is_visible()
 
-    st = {
-        "timer": vis(".timer-page"),
-        "thanks": vis(".thanks-page"),
-        "error": vis(".fsc-inline-error"),
-        "input": vis("#inputOptinLinkLoggedIn"),
-    }
-    st["error_text"] = page.locator(".fsc-inline-error").inner_text() if st["error"] else ""
+    st = {"timer": vis(".timer-page"), "thanks": vis(".thanks-page"),
+          "err": vis(".fsc-inline-error")}
+    st["err_text"] = page.locator(".fsc-inline-error").inner_text() if st["err"] else ""
     if st["thanks"]:
-        err_box = page.locator(".thanks-page.fsc-error")
-        st["thanks_error"] = err_box.count() > 0
-        st["thanks_text"] = page.locator(".thanks-page").inner_text().replace("\n", " ")[:300]
+        st["bad"] = page.locator(".thanks-page.fsc-error").count() > 0
+        st["msg"] = page.locator(".thanks-page").inner_text().replace("\n", " ")[:300]
     else:
-        st["thanks_error"] = False
-        st["thanks_text"] = ""
+        st["bad"] = False
+        st["msg"] = ""
     return st
 
 
-def wait_for_submit(page, timeout: int) -> str:
-    """بعد از تایمر، صبر میکنه تا پاسخ /api/api بیاد و صفحه Thanks دیده بشه."""
-    end = time.time() + timeout
-    while time.time() < end:
-        st = page_status(page)
-        if st["thanks"]:
-            return "error" if st["thanks_error"] else "success"
-        time.sleep(1)
-    return "timeout"
-
-
-def save_shot(page, attempt: int, tag: str) -> None:
-    """اسکرین‌شات برای دیباگ (روی گیتهاب آپلود میشه)."""
-    try:
-        os.makedirs("debug", exist_ok=True)
-        path = os.path.join("debug", f"attempt{attempt}_{tag}.png")
-        page.screenshot(path=path, full_page=False)
-        log(f"اسکرین‌شات ذخیره شد: {path}")
-    except Exception:
-        pass
-
-
-def run_attempt(browser, attempt: int) -> tuple:
-    """
-    یکبار کل فلو. خروجی:
-      ("retry", دلیل)     -> کل فلو رو دوباره بزن
-      ("done", دلیل)      -> تموم شد (موفق یا خطای سروری که تکرارش بی‌فایده‌ست)
-    """
-    ctx = browser.new_context(
-        user_agent=UA,
-        viewport={"width": 1366, "height": 900},
-        locale="en-US",
-        timezone_id="UTC",
-    )
+def attempt(browser, n):
+    ctx = browser.new_context(user_agent=UA, viewport={"width": 1366, "height": 900},
+                              locale="en-US", timezone_id="UTC")
     page = ctx.new_page()
-    api_log = []
+    api = []
 
     def on_resp(resp):
         if "/api/" in resp.url and not resp.url.endswith(("style.css", ".js")):
@@ -157,109 +127,103 @@ def run_attempt(browser, attempt: int) -> tuple:
                 body = resp.text()[:200]
             except Exception:
                 body = "?"
-            api_log.append((resp.status, resp.url.rsplit("/api/", 1)[-1], body))
+            api.append((resp.status, resp.url.rsplit("/api/", 1)[-1], body))
 
     page.on("response", on_resp)
-
     try:
-        log(f"تلاش {attempt}/{ATTEMPTS}: باز کردن صفحه...")
+        log(f"تلاش {n}/{ATTEMPTS}: باز کردن صفحه...")
         page.goto(SITE, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_selector("#inputOptinLinkLoggedIn", timeout=40000)
-        log(f"لینک رو میذارم: {TARGET_LINK}")
+        log(f"لینک: {TARGET_LINK}")
         page.fill("#inputOptinLinkLoggedIn", TARGET_LINK)
         page.bring_to_front()
         time.sleep(0.3)
         page.click("#btnOptinLoggedIn")
         log("دکمه Get It Now زده شد، منتظر چک امنیتی...")
 
-        # ---- مرحله Turnstile ----
-        clicked_ts = False
-        flow_start = time.time()
-        end = time.time() + CAPTCHA_WAIT
+        clicked = False
+        start = time.time()
+        end = start + CAPTCHA_WAIT
         while time.time() < end:
-            st = page_status(page)
+            st = status(page)
             if st["timer"]:
-                log("چک امنیتی رد شد! تایمر شروع شد.")
+                log("چک امنیتی رد شد، تایمر شروع شد.")
                 break
-            if st["error"]:
-                log(f"خطای ویجت: {st['error_text']}")
-                save_shot(page, attempt, "captcha")
-                return "retry", st["error_text"]
-            box = turnstile_box(page)
-            # ویجت اول حدود 12 ثانیه مخفیه، بعد میگه "Verify you are human"
-            if box and not clicked_ts and time.time() - flow_start > 12:
-                x = box["x"] + 24
-                y = box["y"] + box["height"] / 2
-                page.bring_to_front()
-                human_click(page, x, y)
-                log(f"روی چک‌باکس Turnstile کلیک شد ({int(x)},{int(y)})")
-                clicked_ts = True
+            if st["err"]:
+                log(f"خطای ویجت: {st['err_text']}")
+                shot(page, n, "captcha")
+                return "retry", st["err_text"]
+            if not clicked and widget_box(page, timeout=5):
+                log("ویجت آماده شد، دارم کلیک میکنم...")
+                clicked = click_widget(page)
+                time.sleep(1)
+                continue
             time.sleep(1)
         else:
             log("چک امنیتی در زمان مقرر تموم نشد.")
-            save_shot(page, attempt, "captcha-timeout")
+            shot(page, n, "captcha-timeout")
             return "retry", "captcha timeout"
 
-        st = page_status(page)
-        if not st["timer"]:
+        if not status(page)["timer"]:
             return "retry", "timer did not start"
 
-        # ---- مرحله تایمر ----
         raw = page.locator("#timeTimer").inner_text().strip()
-        total = 0
         if re.match(r"^\d+:\d+:\d+$", raw):
             h, m, s = (int(v) for v in raw.split(":"))
             total = h * 3600 + m * 60 + s
         elif re.match(r"^\d+:\d+$", raw):
             m, s = (int(v) for v in raw.split(":"))
             total = m * 60 + s
+        else:
+            total = 0
         if total <= 0:
             total = TIMER_MAX
-        # بافر کوچیک تا پست شدن
-        wait_sec = min(total + 5, TIMER_MAX)
-        log(f"تایمر {raw} = {total} ثانیه. تا {wait_sec} ثانیه صبر میکنم...")
+        wait = min(total + 5, TIMER_MAX)
+        log(f"تایمر {raw} = {total} ثانیه. تا {wait} ثانیه صبر میکنم...")
 
-        end = time.time() + wait_sec
+        end = time.time() + wait
         last = -1
         while time.time() < end:
             left = int(end - time.time())
             if left != last and left % 60 == 0:
                 log(f"... {left} ثانیه مونده")
                 last = left
-            st = page_status(page)
+            st = status(page)
             if st["thanks"]:
                 break
-            if st["error"]:
-                log(f"خطا وسط تایمر: {st['error_text']}")
-                return "retry", st["error_text"]
+            if st["err"]:
+                log(f"خطا وسط تایمر: {st['err_text']}")
+                shot(page, n, "timer")
+                return "retry", st["err_text"]
             time.sleep(1)
 
-        # ---- مرحله ثبت سفارش ----
-        result = wait_for_submit(page, timeout=60)
-        st = page_status(page)
-        for item in api_log[-4:]:
+        res = "timeout"
+        end = time.time() + 60
+        while time.time() < end:
+            st = status(page)
+            if st["thanks"]:
+                res = "error" if st["bad"] else "success"
+                break
+            time.sleep(1)
+        st = status(page)
+        for item in api[-4:]:
             log(f"  api: {item[0]} {item[1]} -> {item[2]}")
-        if result == "success":
-            log(f"ثبت سفارش موفق: {st['thanks_text']}")
+        if res == "success":
+            log(f"ثبت سفارش موفق: {st['msg']}")
             return "done", "success"
-        if result == "error":
-            msg = st["thanks_text"] or "unknown"
-            log(f"سرور خطا داد: {msg}")
-            save_shot(page, attempt, "submit")
-            # خطاهایی که با تلاش فوری درست نمیشن
-            if any(k in msg for k in ("Daily", "funds", "balance", "30 Minutes", "Completed", "rate")):
-                return "done", msg
-            return "retry", msg
+        if res == "error":
+            log(f"سرور خطا داد: {st['msg']}")
+            shot(page, n, "submit")
+            if any(k in st["msg"] for k in
+                   ("Daily", "funds", "balance", "30 Minutes", "Completed", "rate")):
+                return "done", st["msg"]
+            return "retry", st["msg"]
         log("پاسخ ثبت سفارش نیومد.")
-        save_shot(page, attempt, "no-submit")
+        shot(page, n, "no-submit")
         return "retry", "submit timeout"
-
     except Exception as exc:
         log(f"استثناء: {exc}")
-        try:
-            save_shot(page, attempt, "exception")
-        except Exception:
-            pass
+        shot(page, n, "exception")
         return "retry", str(exc)
     finally:
         try:
@@ -268,43 +232,37 @@ def run_attempt(browser, attempt: int) -> tuple:
             pass
 
 
-def main() -> int:
+def main():
     if not TARGET_LINK or "YOUR" in TARGET_LINK.upper():
         log("TARGET_LINK ست نشده! مثال: TARGET_LINK=https://t.me/mychannel")
         return 1
     if not TARGET_LINK.startswith("http"):
         log(f"TARGET_LINK باید لینک باشه: {TARGET_LINK}")
         return 1
-
     log(f"هدف: {SITE}")
     log(f"لینک: {TARGET_LINK}")
-
-    last_reason = ""
+    last = ""
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=HEADLESS,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-background-timer-throttling",
-                "--window-size=1366,900",
-            ],
-        )
+        browser = p.chromium.launch(channel="chromium", headless=HEADLESS, args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-background-timer-throttling",
+            "--window-size=1366,900",
+        ])
         try:
-            for attempt in range(1, ATTEMPTS + 1):
-                outcome, reason = run_attempt(browser, attempt)
-                last_reason = reason
-                if outcome == "done":
-                    if reason == "success":
-                        log("✅ همه‌چیز موفق بود.")
+            for n in range(1, ATTEMPTS + 1):
+                out, why = attempt(browser, n)
+                last = why
+                if out == "done":
+                    if why == "success":
+                        log("همه‌چیز موفق بود.")
                         return 0
-                    log(f"⛔ تلاش متوقف شد: {reason}")
-                    return 1
-                if attempt < ATTEMPTS:
-                    wait = 10 * attempt
+                    log(f"تلاش متوقف شد: {why}")
+                        return 1
+                if n < ATTEMPTS:
+                    wait = 10 * n
                     log(f"تلاش بعدی بعد از {wait} ثانیه...")
                     time.sleep(wait)
         finally:
@@ -312,8 +270,7 @@ def main() -> int:
                 browser.close()
             except Exception:
                 pass
-
-    log(f"❌ بعد از {ATTEMPTS} تلاش موفق نشدیم. آخرین دلیل: {last_reason}")
+    log(f"بعد از {ATTEMPTS} تلاش موفق نشدیم. آخرین دلیل: {last}")
     return 1
 
 
