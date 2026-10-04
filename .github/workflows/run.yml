@@ -1,12 +1,15 @@
 name: run-timer-bot
+
 on:
   schedule:
     - cron: '5 */2 * * *'
   workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45  # تایمر سرور تا 20 دقیقه هم میره، با بافر و تلاش مجدد
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
