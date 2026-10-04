@@ -44,7 +44,6 @@ def click_human(page, x, y):
 
 
 def widget_box(page, timeout=45):
-    """صبر میکنه تا ویجت Turnstile واقعاً رندر بشه (نه iframe 1x1)."""
     end = time.time() + timeout
     while time.time() < end:
         try:
@@ -60,7 +59,6 @@ def widget_box(page, timeout=45):
 
 
 def click_widget(page):
-    """کلیک روی چک‌باکس ویجت: اول روی المنت واقعی، بعد با مختصات انسانی."""
     b = widget_box(page)
     if not b:
         return False
@@ -260,7 +258,7 @@ def main():
                         log("همه‌چیز موفق بود.")
                         return 0
                     log(f"تلاش متوقف شد: {why}")
-                        return 1
+                    return 1
                 if n < ATTEMPTS:
                     wait = 10 * n
                     log(f"تلاش بعدی بعد از {wait} ثانیه...")
