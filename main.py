@@ -179,4 +179,143 @@ def run_attempt(browser, attempt: int) -> tuple:
         while time.time() < end:
             st = page_status(page)
             if st["timer"]:
-                log
+                log("چک امنیتی رد شد! تایمر شروع شد.")
+                break
+            if st["error"]:
+                log(f"خطای ویجت: {st['error_text']}")
+                save_shot(page, attempt, "captcha")
+                return "retry", st["error_text"]
+            box = turnstile_box(page)
+            # ویجت اول حدود 12 ثانیه مخفیه، بعد میگه "Verify you are human"
+            if box and not clicked_ts and time.time() - flow_start > 12:
+                x = box["x"] + 24
+                y = box["y"] + box["height"] / 2
+                page.bring_to_front()
+                human_click(page, x, y)
+                log(f"روی چک‌باکس Turnstile کلیک شد ({int(x)},{int(y)})")
+                clicked_ts = True
+            time.sleep(1)
+        else:
+            log("چک امنیتی در زمان مقرر تموم نشد.")
+            save_shot(page, attempt, "captcha-timeout")
+            return "retry", "captcha timeout"
+
+        st = page_status(page)
+        if not st["timer"]:
+            return "retry", "timer did not start"
+
+        # ---- مرحله تایمر ----
+        raw = page.locator("#timeTimer").inner_text().strip()
+        total = 0
+        if re.match(r"^\d+:\d+:\d+$", raw):
+            h, m, s = (int(v) for v in raw.split(":"))
+            total = h * 3600 + m * 60 + s
+        elif re.match(r"^\d+:\d+$", raw):
+            m, s = (int(v) for v in raw.split(":"))
+            total = m * 60 + s
+        if total <= 0:
+            total = TIMER_MAX
+        # بافر کوچیک تا پست شدن
+        wait_sec = min(total + 5, TIMER_MAX)
+        log(f"تایمر {raw} = {total} ثانیه. تا {wait_sec} ثانیه صبر میکنم...")
+
+        end = time.time() + wait_sec
+        last = -1
+        while time.time() < end:
+            left = int(end - time.time())
+            if left != last and left % 60 == 0:
+                log(f"... {left} ثانیه مونده")
+                last = left
+            st = page_status(page)
+            if st["thanks"]:
+                break
+            if st["error"]:
+                log(f"خطا وسط تایمر: {st['error_text']}")
+                return "retry", st["error_text"]
+            time.sleep(1)
+
+        # ---- مرحله ثبت سفارش ----
+        result = wait_for_submit(page, timeout=60)
+        st = page_status(page)
+        for item in api_log[-4:]:
+            log(f"  api: {item[0]} {item[1]} -> {item[2]}")
+        if result == "success":
+            log(f"ثبت سفارش موفق: {st['thanks_text']}")
+            return "done", "success"
+        if result == "error":
+            msg = st["thanks_text"] or "unknown"
+            log(f"سرور خطا داد: {msg}")
+            save_shot(page, attempt, "submit")
+            # خطاهایی که با تلاش فوری درست نمیشن
+            if any(k in msg for k in ("Daily", "funds", "balance", "30 Minutes", "Completed", "rate")):
+                return "done", msg
+            return "retry", msg
+        log("پاسخ ثبت سفارش نیومد.")
+        save_shot(page, attempt, "no-submit")
+        return "retry", "submit timeout"
+
+    except Exception as exc:
+        log(f"استثناء: {exc}")
+        try:
+            save_shot(page, attempt, "exception")
+        except Exception:
+            pass
+        return "retry", str(exc)
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+
+
+def main() -> int:
+    if not TARGET_LINK or "YOUR" in TARGET_LINK.upper():
+        log("TARGET_LINK ست نشده! مثال: TARGET_LINK=https://t.me/mychannel")
+        return 1
+    if not TARGET_LINK.startswith("http"):
+        log(f"TARGET_LINK باید لینک باشه: {TARGET_LINK}")
+        return 1
+
+    log(f"هدف: {SITE}")
+    log(f"لینک: {TARGET_LINK}")
+
+    last_reason = ""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-background-timer-throttling",
+                "--window-size=1366,900",
+            ],
+        )
+        try:
+            for attempt in range(1, ATTEMPTS + 1):
+                outcome, reason = run_attempt(browser, attempt)
+                last_reason = reason
+                if outcome == "done":
+                    if reason == "success":
+                        log("✅ همه‌چیز موفق بود.")
+                        return 0
+                    log(f"⛔ تلاش متوقف شد: {reason}")
+                    return 1
+                if attempt < ATTEMPTS:
+                    wait = 10 * attempt
+                    log(f"تلاش بعدی بعد از {wait} ثانیه...")
+                    time.sleep(wait)
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+    log(f"❌ بعد از {ATTEMPTS} تلاش موفق نشدیم. آخرین دلیل: {last_reason}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
