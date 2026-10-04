@@ -2,21 +2,38 @@ name: run-timer-bot
 
 on:
   schedule:
+    # هر ۲ ساعت یکبار (به وقت UTC)
     - cron: '5 */2 * * *'
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45  # تایمر سرور تا 20 دقیقه هم میره، با بافر و تلاش مجدد
+    # تایمر سایت تا ۲۰ دقیقه میره + چند تلاش برای چک امنیتی
+    timeout-minutes: 50
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
       - name: Run bot
         env:
           TARGET_LINK: ${{ secrets.TARGET_LINK }}
-        run: python main.py
+        run: xvfb-run -a python main.py
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 7
